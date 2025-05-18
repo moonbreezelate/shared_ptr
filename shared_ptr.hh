@@ -1,0 +1,319 @@
+// simple non-atomic shared_ptr and weak_ptr suits implementation
+// ref stl shared_ptr
+#pragma once
+
+#include <util/raii_guard.hh>
+
+#include <cstddef>
+#include <cstdlib>
+#include <exception>
+#include <utility>
+
+namespace bull {
+
+class bad_weak_ptr : public std::exception {
+public:
+  const char* what() const noexcept override { return "bad_weak_ptr"; }
+};
+
+class control_block {
+public:
+  control_block() noexcept = default;
+
+  void use_add() {
+    if (use_cnt_ == 0) {
+      throw bad_weak_ptr();
+    }
+    ++use_cnt_;
+  }
+
+  void weak_add() noexcept { ++weak_cnt_; }
+
+  void use_release() noexcept {
+    if (--use_cnt_ == 0) {
+      do_release();
+      if (--weak_cnt_ == 0) {
+        delete this;
+      }
+    }
+  }
+
+  void weak_release() noexcept {
+    if (--weak_cnt_ == 0 && use_cnt_ == 0) {
+      delete this;
+    }
+  }
+
+  std::size_t use_count() const noexcept { return use_cnt_; }
+
+protected:
+  virtual void do_release() = 0;
+
+private:
+  std::size_t use_cnt_ {1};
+  std::size_t weak_cnt_ {1};
+};
+
+template <typename T>
+class weak_ptr;
+
+template <typename T>
+class shared_ptr;
+
+template <typename T>
+class enable_shared_from_this {
+  template <typename U>
+  friend class shared_ptr;
+
+public:
+  shared_ptr<T> shared_from_this() { return weak_this_.lock(); }
+
+  shared_ptr<const T> shared_from_this() const { return weak_this_.lock(); }
+
+private:
+  weak_ptr<T> weak_this_;
+
+  friend enable_shared_from_this* enable_shared_from_this_base(control_block* /* unused */,
+                                                               enable_shared_from_this* ptr) {
+    return ptr;
+  }
+
+  template <typename U>
+  void weak_assign(U* ptr, control_block* cb) const noexcept {
+    weak_this_.assign(ptr, cb);
+  }
+};
+
+// shared_ptr internal class.
+// for make_shared do alloc memory once time;
+template <typename T>
+class control_block_impl final : public control_block {
+  template <typename U>
+  friend class shared_ptr;
+
+  // public:
+  template <typename... Args>
+  explicit control_block_impl(Args&&... args) : obj_(std::forward<Args>(args)...) {}
+
+  T* object() { return &obj_; }
+
+  T* object() const { return &obj_; }
+
+  void do_release() override final { obj_.~T(); }
+
+  T obj_;
+};
+
+// shared_ptr internal class.
+// for raw pointer
+template <typename T>
+class raw_ptr_guarder final : public control_block {
+  template <typename U>
+  friend class shared_pt;
+
+  raw_ptr_guarder(T* ptr) noexcept : ptr_(ptr) {}
+
+  void do_release() override final { delete ptr_; }
+
+  T* ptr_;
+};
+
+template <typename T>
+class shared_ptr {
+  template <typename U>
+  friend class weak_ptr;
+
+  template <typename Yp>
+  using esft_base_t = decltype(enable_shared_from_this_base(std::declval<control_block*>(), std::declval<Yp*>()));
+
+  template <typename Yp, typename = void>
+  struct has_esft_base : std::false_type {};
+
+  template <typename Yp>
+  struct has_esft_base<Yp, std::__void_t<esft_base_t<Yp>>> : std::true_type {};
+
+  template <typename Yp, typename Yp2 = typename std::remove_cv<Yp>::type>
+  typename std::enable_if_t<has_esft_base<Yp2>::value> enable_shared_from_this_with(Yp* ptr) noexcept {
+    if (auto base = enable_shared_from_this_base(cb_, ptr)) {
+      base->weak_assign(static_cast<Yp2*>(ptr), cb_);
+    }
+  }
+
+  template <typename Yp, typename Yp2 = typename std::remove_cv<Yp>::type>
+  typename std::enable_if_t<!has_esft_base<Yp2>::value> enable_shared_from_this_with(Yp* /*unused*/) noexcept {}
+
+public:
+  shared_ptr() noexcept = default;
+
+  // shared_ptr(std::nullptr_t /* unused */) noexcept = default;
+
+  explicit shared_ptr(T* ptr) {
+    if (ptr) {
+      cb_  = new raw_ptr_guarder(ptr);
+      ptr_ = ptr;
+      enable_shared_from_this_with(ptr_);
+    }
+  }
+
+  // new --> malloc + placement new
+  template <typename... Args>
+  explicit shared_ptr(Args&&... args) {
+    auto* mem = std::malloc(sizeof(control_block_impl<T>));
+    if (!mem) {
+      throw std::bad_alloc();
+    }
+    auto  guard = make_defer([mem] { std::free(mem); });
+    auto* cb    = new (mem) control_block_impl<T>(std::forward<Args>(args)...);
+    guard.dismiss();
+    cb_  = cb;
+    ptr_ = static_cast<control_block_impl<T>*>(cb_)->object();
+    enable_shared_from_this_with(ptr_);
+  }
+
+  shared_ptr(const shared_ptr& other) noexcept : cb_(other.cb_), ptr_(other.ptr_) {
+    if (cb_) {
+      cb_->use_add();
+    }
+  }
+
+  shared_ptr(shared_ptr&& other) noexcept
+      : cb_(std::exchange(other.cb_, nullptr)),
+        ptr_(std::exchange(other.ptr_, nullptr)) {}
+
+  shared_ptr(const weak_ptr<T>& weak) {
+    if (weak.cb_ && weak.cb_->use_count() > 0) {
+      cb_  = weak.cb_;
+      ptr_ = static_cast<control_block_impl<T>*>(weak.cb_)->object();
+      cb_->use_add();
+    }
+  }
+
+  template <typename U, typename = std::enable_if_t<std::is_convertible_v<U*, T*>>>
+  shared_ptr(const shared_ptr<U>& other) noexcept : cb_(other.cb_),
+                                                    ptr_(other.ptr_) {
+    if (cb_) {
+      cb_->use_add();
+    }
+  }
+
+  ~shared_ptr() { reset(); }
+
+  shared_ptr& operator=(const shared_ptr& other) noexcept {
+    if (this != &other) {
+      this->~shared_ptr();
+      new (this) shared_ptr(other);
+    }
+    return *this;
+  }
+
+  shared_ptr& operator=(shared_ptr&& other) noexcept {
+    if (this != &other) {
+      this->~shared_ptr();
+      new (this) shared_ptr(std::move(other));
+    }
+    return *this;
+  }
+
+  void reset() noexcept {
+    if (cb_) {
+      cb_->use_release();
+      cb_  = nullptr;
+      ptr_ = nullptr;
+    }
+  }
+
+  T* get() const noexcept { return ptr_; }
+
+  T& operator*() const noexcept { return *ptr_; }
+
+  T* operator->() const noexcept { return ptr_; }
+
+  std::size_t use_count() const noexcept { return cb_ ? cb_->use_count() : 0; }
+
+  explicit operator bool() const noexcept { return cb_ != nullptr; }
+
+private:
+  control_block* cb_ {};
+  T*             ptr_ {};
+};
+
+// weak_ptr 定义
+template <typename T>
+class weak_ptr {
+  template <typename U>
+  friend class enable_shared_from_this;
+  template <typename U>
+  friend class shared_ptr;
+
+  void assign(T* ptr, control_block* cb) noexcept {
+    if (use_count() == 0) {
+      ptr_ = ptr;
+      cb_  = cb;
+    }
+  }
+
+public:
+  weak_ptr() noexcept : cb_(nullptr), ptr_(nullptr) {}
+
+  weak_ptr(const shared_ptr<T>& shared) noexcept : cb_(shared.cb_), ptr_(shared.ptr_) {
+    if (cb_) {
+      cb_->weak_add();
+    }
+  }
+
+  weak_ptr(const weak_ptr& other) noexcept : cb_(other.cb_), ptr_(other.ptr_) {
+    if (cb_) {
+      cb_->weak_add();
+    }
+  }
+
+  weak_ptr(weak_ptr&& other) noexcept
+      : cb_(std::exchange(other.cb_, nullptr)),
+        ptr_(std::exchange(other.ptr_, nullptr)) {}
+
+  ~weak_ptr() { reset(); }
+
+  weak_ptr& operator=(const weak_ptr& other) noexcept {
+    if (this != &other) {
+      this->~weak_ptr();
+      new (this) weak_ptr(other);
+    }
+    return *this;
+  }
+
+  weak_ptr& operator=(weak_ptr&& other) noexcept {
+    if (this != &other) {
+      this->~weak_ptr();
+      new (this) weak_ptr(std::move(other));
+    }
+    return *this;
+  }
+
+  void reset() noexcept {
+    if (cb_) {
+      cb_->weak_release();
+      cb_  = nullptr;
+      ptr_ = nullptr;
+    }
+  }
+
+  shared_ptr<T> lock() const noexcept {
+    if (cb_ && cb_->use_count() > 0) {
+      return shared_ptr<T>(*this);
+    }
+    return shared_ptr<T>();
+  }
+
+  std::size_t use_count() const noexcept { return cb_ ? cb_->use_count() : 0; }
+
+private:
+  control_block* cb_;
+  T*             ptr_;
+};
+
+template <typename T, typename... Args>
+shared_ptr<T> make_shared(Args&&... args) {
+  return shared_ptr<T>(std::forward<Args>(args)...);
+}
+
+}  // namespace bull
