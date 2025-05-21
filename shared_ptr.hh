@@ -145,8 +145,6 @@ class shared_ptr {
 public:
   shared_ptr() noexcept = default;
 
-  // shared_ptr(std::nullptr_t /* unused */) noexcept = default;
-
   explicit shared_ptr(T* ptr) noexcept {
     if (ptr) {
       cb_  = new raw_ptr_guarder(ptr);
@@ -165,8 +163,8 @@ public:
     auto  guard = make_defer([mem] { std::free(mem); });
     auto* cb    = new (mem) control_block_impl<T>(std::forward<Args>(args)...);
     guard.dismiss();
+    ptr_ = cb->object();
     cb_  = cb;
-    ptr_ = static_cast<control_block_impl<T>*>(cb_)->object();
     enable_shared_from_this_with(ptr_);
   }
 
@@ -251,7 +249,7 @@ class weak_ptr {
   }
 
 public:
-  weak_ptr() noexcept : cb_(nullptr), ptr_(nullptr) {}
+  weak_ptr() noexcept = default;
 
   weak_ptr(const shared_ptr<T>& shared) noexcept : cb_(shared.cb_), ptr_(shared.ptr_) {
     if (cb_) {
@@ -305,8 +303,8 @@ public:
   std::size_t use_count() const noexcept { return cb_ ? cb_->use_count() : 0; }
 
 private:
-  control_block* cb_;
-  T*             ptr_;
+  control_block* cb_ {};
+  T*             ptr_ {};
 };
 
 template <typename T, typename... Args>
@@ -314,37 +312,37 @@ shared_ptr<T> make_shared(Args&&... args) {
   return shared_ptr<T>(std::forward<Args>(args)...);
 }
 
-template <typename Tp, typename Up>
-bool operator==(const bull::shared_ptr<Tp>& lhs, const bull::shared_ptr<Up>& rhs) noexcept {
+template <typename T, typename U>
+bool operator==(const bull::shared_ptr<T>& lhs, const bull::shared_ptr<U>& rhs) noexcept {
   return lhs.get() == rhs.get();
 }
 
 /// shared_ptr comparison with nullptr
-template <typename Tp>
-bool operator==(const bull::shared_ptr<Tp>& lhs, std::nullptr_t) noexcept {
+template <typename T>
+bool operator==(const bull::shared_ptr<T>& lhs, std::nullptr_t /*unused*/) noexcept {
   return !lhs.get();
 }
 
-template <typename Tp>
-bool operator==(std::nullptr_t, const bull::shared_ptr<Tp>& rhs) noexcept {
+template <typename T>
+bool operator==(std::nullptr_t /*unused*/, const bull::shared_ptr<T>& rhs) noexcept {
   return !rhs.get();
 }
 
 /// Inequality operator for shared_ptr objects, compares the stored pointers
-template <typename Tp, typename Up>
-bool operator!=(const bull::shared_ptr<Tp>& lhs, const bull::shared_ptr<Up>& rhs) noexcept {
+template <typename T, typename U>
+bool operator!=(const bull::shared_ptr<T>& lhs, const bull::shared_ptr<U>& rhs) noexcept {
   return lhs.get() != rhs.get();
 }
 
 /// shared_ptr comparison with nullptr
-template <typename Tp>
-bool operator!=(const bull::shared_ptr<Tp>& lhs, std::nullptr_t) noexcept {
+template <typename T>
+bool operator!=(const bull::shared_ptr<T>& lhs, std::nullptr_t /*unused*/) noexcept {
   return static_cast<bool>(lhs.get());
 }
 
 /// shared_ptr comparison with nullptr
-template <typename Tp>
-bool operator!=(std::nullptr_t, const bull::shared_ptr<Tp>& rhs) noexcept {
+template <typename T>
+bool operator!=(std::nullptr_t /*unused*/, const bull::shared_ptr<T>& rhs) noexcept {
   return static_cast<bool>(rhs.get());
 }
 
