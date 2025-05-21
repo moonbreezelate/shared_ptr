@@ -19,7 +19,6 @@ target_include_directories(
   bull
   SYSTEM PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/kernel/include>
-    $<INSTALL_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/kernel/include>
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src
 )
