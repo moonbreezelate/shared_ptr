@@ -9,10 +9,10 @@ project(
 add_library(
   bull 
   STATIC 
-  include/core/shared_ptr.hh
-  include/util/raii_guard.hh
-  include/util/nonconpyable.hh
-  src/core/shared_ptr.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/include/core/shared_ptr.hh
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/include/util/raii_guard.hh
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/include/util/noncopyable.hh
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/core/shared_ptr.cc
 )
 
 target_include_directories(
