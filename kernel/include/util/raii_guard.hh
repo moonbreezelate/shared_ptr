@@ -23,6 +23,7 @@ public:
 
   raii_guard& operator=(raii_guard&& other) noexcept {
     if (this != &other) {
+      this->~raii_guard();
       new (this) raii_guard(std::move(other));
     }
     return *this;
